@@ -30,7 +30,7 @@ public class AttachmentService(IAssetRepository assets, IFileStore files, IUnitO
         var attachment = new Attachment
         {
             AssetId = assetId,
-            FileName = Path.GetFileName(fileName),
+            FileName = SafeFileName(fileName),
             ContentType = contentType,
             SizeBytes = length,
             StorageKey = key,
@@ -47,6 +47,13 @@ public class AttachmentService(IAssetRepository assets, IFileStore files, IUnitO
             throw;
         }
         return Mapper.ToDto(attachment);
+    }
+
+    /// <summary>Last path segment, treating both '/' and '\' as separators regardless of the host OS.</summary>
+    private static string SafeFileName(string fileName)
+    {
+        var name = fileName[(fileName.LastIndexOfAny(['/', '\\']) + 1)..];
+        return string.IsNullOrWhiteSpace(name) ? "file" : name;
     }
 
     public async Task<(Stream Content, string FileName, string ContentType)> DownloadAsync(
