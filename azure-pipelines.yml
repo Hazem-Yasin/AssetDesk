@@ -1,0 +1,114 @@
+# Azure DevOps pipeline: build + test on every push/PR; deploy main to Azure App Service (Linux).
+# Define variables in the pipeline UI: azureServiceConnection, webAppName, mysqlConnectionString (secret).
+trigger:
+  branches:
+    include: [main]
+pr:
+  branches:
+    include: [main]
+
+variables:
+  buildConfiguration: Release
+  dotnetVersion: 8.0.x
+  nodeVersion: 22.x
+
+stages:
+  - stage: Build
+    displayName: Build and test
+    jobs:
+      - job: BuildTest
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: UseDotNet@2
+            displayName: Install .NET SDK
+            inputs:
+              packageType: sdk
+              version: $(dotnetVersion)
+
+          - task: NodeTool@0
+            displayName: Install Node
+            inputs:
+              versionSpec: $(nodeVersion)
+
+          # React app: tests first, then build into src/AssetDesk.Api/wwwroot so `dotnet publish` includes it.
+          - script: npm ci
+            workingDirectory: web
+            displayName: Restore web packages
+
+          - script: npm test
+            workingDirectory: web
+            displayName: Web tests
+
+          - script: npm run build
+            workingDirectory: web
+            displayName: Build React app
+
+          - script: dotnet restore AssetDesk.sln
+            displayName: Restore
+
+          - script: dotnet build AssetDesk.sln -c $(buildConfiguration) --no-restore
+            displayName: Build
+
+          - script: >
+              dotnet test AssetDesk.sln -c $(buildConfiguration) --no-build
+              --logger trx --collect:"XPlat Code Coverage" --results-directory $(Agent.TempDirectory)/tests
+            displayName: API tests
+
+          - task: PublishTestResults@2
+            displayName: Publish test results
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: VSTest
+              testResultsFiles: '$(Agent.TempDirectory)/tests/**/*.trx'
+
+          - task: PublishCodeCoverageResults@2
+            displayName: Publish code coverage
+            condition: succeededOrFailed()
+            inputs:
+              summaryFileLocation: '$(Agent.TempDirectory)/tests/**/coverage.cobertura.xml'
+
+          - script: >
+              dotnet publish src/AssetDesk.Api -c $(buildConfiguration) --no-build
+              -o $(Build.ArtifactStagingDirectory)/web
+            displayName: Publish API + SPA
+
+          - script: |
+              dotnet tool restore
+              dotnet tool run dotnet-ef migrations bundle --project src/AssetDesk.Infrastructure \
+                --startup-project src/AssetDesk.Api --self-contained -r linux-x64 \
+                -o $(Build.ArtifactStagingDirectory)/efbundle --force
+            displayName: Build EF Core migration bundle
+
+          - publish: $(Build.ArtifactStagingDirectory)
+            artifact: drop
+            displayName: Publish build artifacts
+
+  - stage: Deploy
+    displayName: Deploy to Azure App Service
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: Deploy
+        environment: assetdesk-production # configure an approval check on this environment
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: drop
+
+                - script: |
+                    chmod +x $(Pipeline.Workspace)/drop/efbundle
+                    $(Pipeline.Workspace)/drop/efbundle --connection "$(mysqlConnectionString)"
+                  displayName: Apply EF Core migrations
+
+                - task: AzureWebApp@1
+                  displayName: Deploy web app
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    appType: webAppLinux
+                    appName: $(webAppName)
+                    package: $(Pipeline.Workspace)/drop/web

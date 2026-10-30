@@ -1,0 +1,33 @@
+# AssetDesk + MySQL.  Usage:  copy .env.example to .env, then  docker compose up --build  ->  http://localhost:8080
+services:
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-Your_strong_Passw0rd}
+      MYSQL_DATABASE: assetdesk
+    volumes:
+      - dbdata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  web:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      Database__Provider: MySql
+      ConnectionStrings__Default: "Server=db;Port=3306;Database=assetdesk;User=root;Password=${MYSQL_PASSWORD:-Your_strong_Passw0rd}"
+      Jwt__Key: ${JWT_KEY:?Set JWT_KEY in .env (random, at least 32 characters)}
+      Seed__AdminPassword: ${ADMIN_PASSWORD:-Admin#12345}
+    volumes:
+      - uploads:/data/uploads
+    ports:
+      - "8080:8080"
+
+volumes:
+  dbdata:
+  uploads:

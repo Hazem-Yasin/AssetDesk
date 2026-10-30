@@ -1,0 +1,60 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AssetDesk file storage on AWS - a private, encrypted S3 bucket for asset attachments and an IAM role the
+  app can assume (App Runner / ECS task / EC2) with access limited to that bucket.
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: Globally unique bucket name, e.g. assetdesk-attachments-<account-id>
+    AllowedPattern: "^[a-z0-9][a-z0-9.-]{2,62}$"
+  AppPrincipal:
+    Type: String
+    Default: tasks.apprunner.amazonaws.com
+    Description: Service principal allowed to assume the app role (ecs-tasks.amazonaws.com for ECS, ec2.amazonaws.com for EC2).
+
+Resources:
+  AttachmentsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Ref AppPrincipal
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: attachments-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
+                Resource: !Sub "${AttachmentsBucket.Arn}/*"
+
+Outputs:
+  BucketName:
+    Value: !Ref AttachmentsBucket
+    Description: Set as Storage__Bucket
+  AppRoleArn:
+    Value: !GetAtt AppRole.Arn
+    Description: Attach to the compute service so the app gets credentials without access keys
